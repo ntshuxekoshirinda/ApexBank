@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 public class Account {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid UserId { get; set; }
@@ -15,7 +17,6 @@ public class Account {
     public User User { get; set; } = null!;
 
     private static string GenerateAccountNumber() {
-        // Generates a random 10-digit account number string for simulation
         return Random.Shared.Next(100000000, 999999999).ToString();
     }
 }
