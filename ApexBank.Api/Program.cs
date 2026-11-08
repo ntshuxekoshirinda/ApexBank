@@ -1,31 +1,62 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using FluentValidation;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Register PostgreSQL Database (using connection string or user secrets)
+// 1. Database Configuration (PostgreSQL / Aiven or Local)
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-// 2. Register Validation and Swagger
+// 2. Validation, API Explorer & Standard Swagger
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// 3. JWT Authentication & Authorization
+var jwtSettings = builder.Configuration.GetSection("Jwt");
+var secretKey = jwtSettings["SecretKey"] ?? throw new InvalidOperationException("JWT SecretKey is missing.");
+var key = Encoding.UTF8.GetBytes(secretKey);
+
+builder.Services.AddAuthentication(options => {
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options => {
+    options.TokenValidationParameters = new TokenValidationParameters {
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(key),
+        ValidateIssuer = true,
+        ValidIssuer = jwtSettings["Issuer"],
+        ValidateAudience = true,
+        ValidAudience = jwtSettings["Audience"],
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.Zero
+    };
+});
+
+builder.Services.AddAuthorization();
+builder.Services.AddSingleton<TokenService>();
+
 var app = builder.Build();
 
-// 3. Configure Middleware Pipeline
+// 4. Middleware Pipeline
 if (app.Environment.IsDevelopment()) {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 
 // --- PHASE 1 ENDPOINTS ---
 
-// Register a new bank customer
+// 1. Register a new customer
 app.MapPost("/api/users", async (RegisterUserDto dto, IValidator<RegisterUserDto> validator, AppDbContext db) => {
     var validationResult = await validator.ValidateAsync(dto);
     if (!validationResult.IsValid) {
@@ -48,20 +79,39 @@ app.MapPost("/api/users", async (RegisterUserDto dto, IValidator<RegisterUserDto
     return Results.Created($"/api/users/{user.Id}", new { user.Id, user.Username, user.Email });
 });
 
-// Open a new currency account
-app.MapPost("/api/accounts", async (OpenAccountDto dto, IValidator<OpenAccountDto> validator, AppDbContext db) => {
+// 2. Authenticate and issue JWT access token
+app.MapPost("/api/auth/login", async (LoginDto dto, AppDbContext db, TokenService tokenService) => {
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
+
+    if (user == null || !BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash)) {
+        return Results.Unauthorized();
+    }
+
+    var token = tokenService.GenerateToken(user);
+    return Results.Ok(new { AccessToken = token, TokenType = "Bearer" });
+});
+
+// 3. Open a new currency account (Secured via JWT & Bound to Authenticated User)
+app.MapPost("/api/accounts", async (OpenAccountDto dto, IValidator<OpenAccountDto> validator, AppDbContext db, HttpContext httpContext) => {
     var validationResult = await validator.ValidateAsync(dto);
     if (!validationResult.IsValid) {
         return Results.ValidationProblem(validationResult.ToDictionary());
     }
 
-    var userExists = await db.Users.AnyAsync(u => u.Id == dto.UserId);
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (userIdClaim == null || !Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
+        return Results.Unauthorized();
+    }
+
+    var userExists = await db.Users.AnyAsync(u => u.Id == authenticatedUserId);
     if (!userExists) {
         return Results.NotFound(new { Message = "User not found." });
     }
 
     var account = new Account {
-        UserId = dto.UserId,
+        UserId = authenticatedUserId,
         CurrencyCode = dto.CurrencyCode.ToUpper(),
         Balance = 0.0000m
     };
@@ -76,10 +126,17 @@ app.MapPost("/api/accounts", async (OpenAccountDto dto, IValidator<OpenAccountDt
         account.Balance,
         account.CreatedAt
     });
-});
+}).RequireAuthorization();
 
-// Check account balances for a specific user
-app.MapGet("/api/users/{userId}/accounts", async (Guid userId, AppDbContext db) => {
+// 4. Check account balances for the logged-in user
+app.MapGet("/api/accounts", async (AppDbContext db, HttpContext httpContext) => {
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (!Guid.TryParse(userIdClaim, out var userId)) {
+        return Results.Unauthorized();
+    }
+
     var accounts = await db.Accounts
         .Where(a => a.UserId == userId)
         .Select(a => new {
@@ -92,12 +149,13 @@ app.MapGet("/api/users/{userId}/accounts", async (Guid userId, AppDbContext db) 
         .ToListAsync();
 
     return Results.Ok(accounts);
-});
+}).RequireAuthorization();
 
 app.Run();
 
-// --- DTO Records ---
+// --- DTO RECORDS & PARTIAL PROGRAM ---
 public record RegisterUserDto(string Username, string Email, string Password);
-public record OpenAccountDto(Guid UserId, string CurrencyCode);
+public record LoginDto(string Email, string Password);
+public record OpenAccountDto(string CurrencyCode);
 
 public partial class Program { }

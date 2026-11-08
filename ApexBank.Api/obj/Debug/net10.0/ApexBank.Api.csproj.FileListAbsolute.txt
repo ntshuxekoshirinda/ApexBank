@@ -127,3 +127,12 @@ F:\Odin\ApexBank\ApexBank.Api\obj\Debug\net10.0\refint\ApexBank.Api.dll
 F:\Odin\ApexBank\ApexBank.Api\obj\Debug\net10.0\ApexBank.Api.pdb
 F:\Odin\ApexBank\ApexBank.Api\obj\Debug\net10.0\ApexBank.Api.genruntimeconfig.cache
 F:\Odin\ApexBank\ApexBank.Api\obj\Debug\net10.0\ref\ApexBank.Api.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.AspNetCore.Authentication.JwtBearer.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.Bcl.Cryptography.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Abstractions.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.IdentityModel.JsonWebTokens.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Logging.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Protocols.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Protocols.OpenIdConnect.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Tokens.dll
+F:\Odin\ApexBank\ApexBank.Api\bin\Debug\net10.0\System.IdentityModel.Tokens.Jwt.dll
