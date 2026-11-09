@@ -17,6 +17,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddScoped<TransferService>();
 
 // 3. JWT Authentication & Authorization
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -149,6 +150,39 @@ app.MapGet("/api/accounts", async (AppDbContext db, HttpContext httpContext) => 
         .ToListAsync();
 
     return Results.Ok(accounts);
+}).RequireAuthorization();
+
+// 5. POST: Execute secure fund transfer between accounts
+app.MapPost("/api/transfers", async (
+    TransferRequestDto dto, 
+    IValidator<TransferRequestDto> validator, 
+    TransferService transferService, 
+    HttpContext httpContext) => {
+
+    var validationResult = await validator.ValidateAsync(dto);
+    if (!validationResult.IsValid) {
+        return Results.ValidationProblem(validationResult.ToDictionary());
+    }
+
+    // Extract authenticated user ID from JWT claims
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (!Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
+        return Results.Unauthorized();
+    }
+
+    var result = await transferService.ExecuteTransferAsync(dto, authenticatedUserId);
+
+    if (result.Status == "Completed") {
+        return Results.Ok(result);
+    } else if (result.Status == "Unauthorized") {
+        return Results.Json(result, statusCode:StatusCodes.Status403Forbidden);
+    } else if (result.Status == "Conflict") {
+        return Results.Conflict(result);
+    }
+
+    return Results.BadRequest(result);
 }).RequireAuthorization();
 
 app.Run();
