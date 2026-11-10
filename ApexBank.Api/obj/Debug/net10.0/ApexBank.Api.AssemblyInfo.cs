@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ApexBank.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a107b4cc6cba3264a86e497140e6c5d2111997e0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3ef6eb4c0ce0c2e290329e707dd3224a29a58e5f")]
 [assembly: System.Reflection.AssemblyProductAttribute("ApexBank.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ApexBank.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

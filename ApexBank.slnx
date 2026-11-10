@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="ApexBank.Api/ApexBank.Api.csproj" />
+  <Project Path="ApexBank.Tests/ApexBank.Tests.csproj" />
 </Solution>

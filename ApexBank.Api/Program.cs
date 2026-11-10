@@ -8,16 +8,19 @@ using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Database Configuration (PostgreSQL / Aiven or Local)
+// 1. Database Configuration (PostgreSQL / Aiven)
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(connectionString));
 
-// 2. Validation, API Explorer & Standard Swagger
+// CRITICAL: Skip Npgsql registration during integration tests to prevent provider conflicts with SQLite
+if (!builder.Environment.IsEnvironment("Testing")) {
+    builder.Services.AddDbContext<AppDbContext>(options =>
+        options.UseNpgsql(connectionString));
+}
+
+// 2. Validation, API Explorer & Swagger
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddScoped<TransferService>();
 
 // 3. JWT Authentication & Authorization
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -42,11 +45,14 @@ builder.Services.AddAuthentication(options => {
 });
 
 builder.Services.AddAuthorization();
+
+// 4. Register Domain Services
 builder.Services.AddSingleton<TokenService>();
+builder.Services.AddScoped<TransferService>();
 
 var app = builder.Build();
 
-// 4. Middleware Pipeline
+// 5. Middleware Pipeline
 if (app.Environment.IsDevelopment()) {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -55,7 +61,7 @@ if (app.Environment.IsDevelopment()) {
 app.UseAuthentication();
 app.UseAuthorization();
 
-// --- PHASE 1 ENDPOINTS ---
+// --- PHASE 1 & 2 ENDPOINTS ---
 
 // 1. Register a new customer
 app.MapPost("/api/users", async (RegisterUserDto dto, IValidator<RegisterUserDto> validator, AppDbContext db) => {
@@ -92,7 +98,7 @@ app.MapPost("/api/auth/login", async (LoginDto dto, AppDbContext db, TokenServic
     return Results.Ok(new { AccessToken = token, TokenType = "Bearer" });
 });
 
-// 3. Open a new currency account (Secured via JWT & Bound to Authenticated User)
+// 3. Open a new currency account (Secured via JWT)
 app.MapPost("/api/accounts", async (OpenAccountDto dto, IValidator<OpenAccountDto> validator, AppDbContext db, HttpContext httpContext) => {
     var validationResult = await validator.ValidateAsync(dto);
     if (!validationResult.IsValid) {
@@ -152,7 +158,7 @@ app.MapGet("/api/accounts", async (AppDbContext db, HttpContext httpContext) => 
     return Results.Ok(accounts);
 }).RequireAuthorization();
 
-// 5. POST: Execute secure fund transfer between accounts
+// 5. Execute secure fund transfer between accounts (ACID & Concurrency Protected)
 app.MapPost("/api/transfers", async (
     TransferRequestDto dto, 
     IValidator<TransferRequestDto> validator, 
@@ -164,7 +170,6 @@ app.MapPost("/api/transfers", async (
         return Results.ValidationProblem(validationResult.ToDictionary());
     }
 
-    // Extract authenticated user ID from JWT claims
     var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                       ?? httpContext.User.FindFirst("sub")?.Value;
 
@@ -177,7 +182,7 @@ app.MapPost("/api/transfers", async (
     if (result.Status == "Completed") {
         return Results.Ok(result);
     } else if (result.Status == "Unauthorized") {
-        return Results.Json(result, statusCode:StatusCodes.Status403Forbidden);
+        return Results.Json(result, statusCode: StatusCodes.Status403Forbidden);
     } else if (result.Status == "Conflict") {
         return Results.Conflict(result);
     }
