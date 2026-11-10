@@ -21,6 +21,7 @@ if (!builder.Environment.IsEnvironment("Testing")) {
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddScoped<CashService>();
 
 // 3. JWT Authentication & Authorization
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -188,6 +189,134 @@ app.MapPost("/api/transfers", async (
     } else if (result.Status == "Conflict") {
         return Results.Conflict(result);
     }
+
+    return Results.BadRequest(result);
+}).RequireAuthorization();
+
+// 6. Get paginated transaction history for a specific account (Secured & Ownership Verified)
+app.MapGet("/api/accounts/{accountId}/transactions", async (
+    Guid accountId, 
+    int? page, 
+    int? pageSize, 
+    TransactionType? type, 
+    AppDbContext db, 
+    HttpContext httpContext) => {
+
+    // 1. Extract authenticated user ID from JWT claims
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (!Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
+        return Results.Unauthorized();
+    }
+
+    // 2. Verify account ownership
+    var account = await db.Accounts
+        .FirstOrDefaultAsync(a => a.Id == accountId && a.UserId == authenticatedUserId);
+
+    if (account == null) {
+        return Results.NotFound(new { Message = "Account not found or you do not have permission to view it." });
+    }
+
+    // 3. Build base query: Transactions where this account is either source or destination
+    var query = db.Transactions
+        .Where(t => t.SourceAccountId == accountId || t.DestinationAccountId == accountId);
+
+    // Optional Filter by Type (Deposit, Withdrawal, Transfer)
+    if (type.HasValue) {
+        query = query.Where(t => t.Type == type.Value);
+    }
+
+    // 4. Pagination Setup (Default: Page 1, 20 items per page)
+    int pageNumber = page ?? 1;
+    int size = pageSize ?? 20;
+    if (pageNumber < 1) pageNumber = 1;
+    if (size < 1 || size > 100) size = 20; // Enforce max page size limit
+
+    var totalCount = await query.CountAsync();
+
+    var transactions = await query
+        .OrderByDescending(t => t.CreatedAt)
+        .Skip((pageNumber - 1) * size)
+        .Take(size)
+        .Select(t => new {
+            t.Id,
+            t.SourceAccountId,
+            t.DestinationAccountId,
+            t.Amount,
+            t.CurrencyCode,
+            Type = t.Type.ToString(),
+            Status = t.Status.ToString(),
+            t.Description,
+            t.CreatedAt,
+            IsDebit = t.SourceAccountId == accountId
+        })
+        .ToListAsync();
+
+    return Results.Ok(new {
+        AccountId = accountId,
+        AccountNumber = account.AccountNumber,
+        CurrentBalance = account.Balance,
+        Page = pageNumber,
+        PageSize = size,
+        TotalTransactions = totalCount,
+        TotalPages = (int)Math.Ceiling(totalCount / (double)size),
+        Transactions = transactions
+    });
+}).RequireAuthorization();
+
+// 7. Execute secure cash deposit
+app.MapPost("/api/deposits", async (
+    DepositRequestDto dto,
+    IValidator<DepositRequestDto> validator,
+    CashService cashService,
+    HttpContext httpContext) => {
+
+    var validationResult = await validator.ValidateAsync(dto);
+    if (!validationResult.IsValid) {
+        return Results.ValidationProblem(validationResult.ToDictionary());
+    }
+
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (!Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
+        return Results.Unauthorized();
+    }
+
+    var result = await cashService.ExecuteDepositAsync(dto, authenticatedUserId);
+
+    if (result.Status == "Completed") return Results.Ok(result);
+    if (result.Status == "Unauthorized") return Results.Json(result, statusCode: StatusCodes.Status403Forbidden);
+    if (result.Status == "Conflict") return Results.Conflict(result);
+
+    return Results.BadRequest(result);
+}).RequireAuthorization();
+
+// 8. Execute secure cash withdrawal
+app.MapPost("/api/withdrawals", async (
+    WithdrawalRequestDto dto,
+    IValidator<WithdrawalRequestDto> validator,
+    CashService cashService,
+    HttpContext httpContext) => {
+
+    var validationResult = await validator.ValidateAsync(dto);
+    if (!validationResult.IsValid) {
+        return Results.ValidationProblem(validationResult.ToDictionary());
+    }
+
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (!Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
+        return Results.Unauthorized();
+    }
+
+    var result = await cashService.ExecuteWithdrawalAsync(dto, authenticatedUserId);
+
+    if (result.Status == "Completed") return Results.Ok(result);
+    if (result.Status == "Unauthorized") return Results.Json(result, statusCode: StatusCodes.Status403Forbidden);
+    if (result.Status == "Conflict") return Results.Conflict(result);
 
     return Results.BadRequest(result);
 }).RequireAuthorization();
