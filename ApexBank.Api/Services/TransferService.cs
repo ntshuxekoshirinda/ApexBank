@@ -2,13 +2,15 @@ using Microsoft.EntityFrameworkCore;
 
 public class TransferService {
     private readonly AppDbContext _context;
+    private readonly IBackgroundTaskQueue _taskQueue;
 
-    public TransferService(AppDbContext context) {
+    public TransferService(AppDbContext context, IBackgroundTaskQueue taskQueue) {
         _context = context;
+        _taskQueue = taskQueue;
     }
 
     public async Task<TransferResult> ExecuteTransferAsync(TransferRequestDto dto, Guid authenticatedUserId) {
-        // 1. IDEMPOTENCY CHECK: If this request key was already processed, return the original result immediately
+        // 1. IDEMPOTENCY CHECK: If this request key was already processed, return original result
         var existingTransaction = await _context.Transactions
             .FirstOrDefaultAsync(t => t.IdempotencyKey == dto.IdempotencyKey);
 
@@ -70,14 +72,25 @@ public class TransferService {
 
             _context.Transactions.Add(ledgerEntry);
 
-            // 4. SAVE CHANGES 
-            // EF Core automatically wraps SaveChanges in an atomic transaction across both SQLite and PostgreSQL.
+            // 4. SAVE CHANGES (Atomic via EF Core SaveChanges)
             await _context.SaveChangesAsync();
+
+            // 5. ASYNCHRONOUS PIPELINE: Push audit message to background queue non-blockingly
+            var auditMessage = new AuditLogMessage(
+                ledgerEntry.Id,
+                sourceAccount.Id,
+                destAccount.Id,
+                dto.Amount,
+                dto.CurrencyCode.ToUpper(),
+                dto.Description,
+                DateTime.UtcNow
+            );
+
+            await _taskQueue.QueueBackgroundWorkItemAsync(auditMessage);
 
             return new TransferResult(ledgerEntry.Id, "Completed", "Transfer completed successfully.");
         }
         catch (DbUpdateConcurrencyException) {
-            // RACE CONDITION CAUGHT: Version mismatch detected by EF Core concurrency token
             return new TransferResult(
                 Guid.Empty, 
                 "Conflict", 

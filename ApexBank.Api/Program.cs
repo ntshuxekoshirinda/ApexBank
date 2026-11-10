@@ -46,9 +46,11 @@ builder.Services.AddAuthentication(options => {
 
 builder.Services.AddAuthorization();
 
-// 4. Register Domain Services
+// 4. Register Domain Services & Background Processing Pipeline
 builder.Services.AddSingleton<TokenService>();
 builder.Services.AddScoped<TransferService>();
+builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>();
+builder.Services.AddHostedService<QueuedHostedService>();
 
 var app = builder.Build();
 
@@ -158,7 +160,7 @@ app.MapGet("/api/accounts", async (AppDbContext db, HttpContext httpContext) => 
     return Results.Ok(accounts);
 }).RequireAuthorization();
 
-// 5. Execute secure fund transfer between accounts (ACID & Concurrency Protected)
+// 5. Execute secure fund transfer between accounts (ACID, Concurrency Protected & Asynchronously Audited)
 app.MapPost("/api/transfers", async (
     TransferRequestDto dto, 
     IValidator<TransferRequestDto> validator, 
