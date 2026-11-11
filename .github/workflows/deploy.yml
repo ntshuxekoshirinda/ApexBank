@@ -1,0 +1,49 @@
+name: Deploy ApexBank API to Azure App Service
+
+on:
+  push:
+    branches: [ "main" ] # Triggers deployment automatically on push to main branch
+  workflow_dispatch:     # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Restore Dependencies
+      run: dotnet restore
+
+    - name: Build Project
+      run: dotnet build --no-restore -c Release
+
+    - name: Run Concurrency & Integration Tests
+      run: dotnet test ApexBank.Tests/ApexBank.Tests.csproj --no-build -c Release
+
+  deploy:
+    needs: build-and-test # Only deploys if tests pass successfully
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Publish API
+      run: dotnet publish ApexBank.Api/ApexBank.Api.csproj -c Release -o ./publish-output
+
+    - name: Deploy to Azure Web App
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: 'apexbank-api-service' # Replace with your exact Azure App Service name
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: ./publish-output
