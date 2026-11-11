@@ -44,6 +44,6 @@ jobs:
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v3
       with:
-        app-name: 'apexbank-api-service' # Replace with your exact Azure App Service name
+        app-name: 'ApexBank-api' # Replace with your exact Azure App Service name
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
         package: ./publish-output
