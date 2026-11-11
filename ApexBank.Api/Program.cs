@@ -1,8 +1,10 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.RateLimiting;
 using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
@@ -21,7 +23,44 @@ if (!builder.Environment.IsEnvironment("Testing")) {
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddScoped<CashService>();
+
+// 2.5. Built-in Rate Limiting Policies
+builder.Services.AddRateLimiter(options => {
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) => {
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsync(
+            "{\"error\": \"Too many requests. Please try again later.\"}", 
+            cancellationToken);
+    };
+
+    // Policy 1: Strict rate limit for authentication/login endpoints (IP-based)
+    options.AddPolicy("auth-limit", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions {
+                PermitLimit = 5,
+                Window = TimeSpan.FromSeconds(10),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0
+            }));
+
+    // Policy 2: Rate limit for financial operations (User ID or IP-based)
+    options.AddPolicy("transaction-limit", httpContext => {
+        var userId = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                     ?? httpContext.Connection.RemoteIpAddress?.ToString() 
+                     ?? "anonymous";
+
+        return RateLimitPartition.GetSlidingWindowLimiter(
+            partitionKey: userId,
+            factory: _ => new SlidingWindowRateLimiterOptions {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                SegmentsPerWindow = 2,
+                QueueLimit = 2
+            });
+    });
+});
 
 // 3. JWT Authentication & Authorization
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -50,6 +89,7 @@ builder.Services.AddAuthorization();
 // 4. Register Domain Services & Background Processing Pipeline
 builder.Services.AddSingleton<TokenService>();
 builder.Services.AddScoped<TransferService>();
+builder.Services.AddScoped<CashService>();
 builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>();
 builder.Services.AddHostedService<QueuedHostedService>();
 
@@ -63,8 +103,9 @@ if (app.Environment.IsDevelopment()) {
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter(); // CRITICAL: Must be placed after Auth and before endpoints
 
-// --- PHASE 1 & 2 ENDPOINTS ---
+// --- BANKING ENGINE ENDPOINTS ---
 
 // 1. Register a new customer
 app.MapPost("/api/users", async (RegisterUserDto dto, IValidator<RegisterUserDto> validator, AppDbContext db) => {
@@ -89,7 +130,7 @@ app.MapPost("/api/users", async (RegisterUserDto dto, IValidator<RegisterUserDto
     return Results.Created($"/api/users/{user.Id}", new { user.Id, user.Username, user.Email });
 });
 
-// 2. Authenticate and issue JWT access token
+// 2. Authenticate and issue JWT access token (Protected by auth rate limiter)
 app.MapPost("/api/auth/login", async (LoginDto dto, AppDbContext db, TokenService tokenService) => {
     var user = await db.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
 
@@ -99,7 +140,7 @@ app.MapPost("/api/auth/login", async (LoginDto dto, AppDbContext db, TokenServic
 
     var token = tokenService.GenerateToken(user);
     return Results.Ok(new { AccessToken = token, TokenType = "Bearer" });
-});
+}).RequireRateLimiting("auth-limit");
 
 // 3. Open a new currency account (Secured via JWT)
 app.MapPost("/api/accounts", async (OpenAccountDto dto, IValidator<OpenAccountDto> validator, AppDbContext db, HttpContext httpContext) => {
@@ -161,39 +202,7 @@ app.MapGet("/api/accounts", async (AppDbContext db, HttpContext httpContext) => 
     return Results.Ok(accounts);
 }).RequireAuthorization();
 
-// 5. Execute secure fund transfer between accounts (ACID, Concurrency Protected & Asynchronously Audited)
-app.MapPost("/api/transfers", async (
-    TransferRequestDto dto, 
-    IValidator<TransferRequestDto> validator, 
-    TransferService transferService, 
-    HttpContext httpContext) => {
-
-    var validationResult = await validator.ValidateAsync(dto);
-    if (!validationResult.IsValid) {
-        return Results.ValidationProblem(validationResult.ToDictionary());
-    }
-
-    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
-                      ?? httpContext.User.FindFirst("sub")?.Value;
-
-    if (!Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
-        return Results.Unauthorized();
-    }
-
-    var result = await transferService.ExecuteTransferAsync(dto, authenticatedUserId);
-
-    if (result.Status == "Completed") {
-        return Results.Ok(result);
-    } else if (result.Status == "Unauthorized") {
-        return Results.Json(result, statusCode: StatusCodes.Status403Forbidden);
-    } else if (result.Status == "Conflict") {
-        return Results.Conflict(result);
-    }
-
-    return Results.BadRequest(result);
-}).RequireAuthorization();
-
-// 6. Get paginated transaction history for a specific account (Secured & Ownership Verified)
+// 5. Get paginated transaction history for a specific account (Secured & Ownership Verified)
 app.MapGet("/api/accounts/{accountId}/transactions", async (
     Guid accountId, 
     int? page, 
@@ -202,7 +211,6 @@ app.MapGet("/api/accounts/{accountId}/transactions", async (
     AppDbContext db, 
     HttpContext httpContext) => {
 
-    // 1. Extract authenticated user ID from JWT claims
     var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                       ?? httpContext.User.FindFirst("sub")?.Value;
 
@@ -210,7 +218,6 @@ app.MapGet("/api/accounts/{accountId}/transactions", async (
         return Results.Unauthorized();
     }
 
-    // 2. Verify account ownership
     var account = await db.Accounts
         .FirstOrDefaultAsync(a => a.Id == accountId && a.UserId == authenticatedUserId);
 
@@ -218,20 +225,17 @@ app.MapGet("/api/accounts/{accountId}/transactions", async (
         return Results.NotFound(new { Message = "Account not found or you do not have permission to view it." });
     }
 
-    // 3. Build base query: Transactions where this account is either source or destination
     var query = db.Transactions
         .Where(t => t.SourceAccountId == accountId || t.DestinationAccountId == accountId);
 
-    // Optional Filter by Type (Deposit, Withdrawal, Transfer)
     if (type.HasValue) {
         query = query.Where(t => t.Type == type.Value);
     }
 
-    // 4. Pagination Setup (Default: Page 1, 20 items per page)
     int pageNumber = page ?? 1;
     int size = pageSize ?? 20;
     if (pageNumber < 1) pageNumber = 1;
-    if (size < 1 || size > 100) size = 20; // Enforce max page size limit
+    if (size < 1 || size > 100) size = 20;
 
     var totalCount = await query.CountAsync();
 
@@ -265,7 +269,36 @@ app.MapGet("/api/accounts/{accountId}/transactions", async (
     });
 }).RequireAuthorization();
 
-// 7. Execute secure cash deposit
+// 6. Execute secure fund transfer between accounts (ACID, Concurrency Protected, Asynchronously Audited & Rate-limited)
+app.MapPost("/api/transfers", async (
+    TransferRequestDto dto, 
+    IValidator<TransferRequestDto> validator, 
+    TransferService transferService, 
+    HttpContext httpContext) => {
+
+    var validationResult = await validator.ValidateAsync(dto);
+    if (!validationResult.IsValid) {
+        return Results.ValidationProblem(validationResult.ToDictionary());
+    }
+
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                      ?? httpContext.User.FindFirst("sub")?.Value;
+
+    if (!Guid.TryParse(userIdClaim, out var authenticatedUserId)) {
+        return Results.Unauthorized();
+    }
+
+    var result = await transferService.ExecuteTransferAsync(dto, authenticatedUserId);
+
+    if (result.Status == "Completed") return Results.Ok(result);
+    if (result.Status == "Unauthorized") return Results.Json(result, statusCode: StatusCodes.Status403Forbidden);
+    if (result.Status == "Conflict") return Results.Conflict(result);
+
+    return Results.BadRequest(result);
+}).RequireAuthorization()
+  .RequireRateLimiting("transaction-limit");
+
+// 7. Execute secure cash deposit (Rate-limited)
 app.MapPost("/api/deposits", async (
     DepositRequestDto dto,
     IValidator<DepositRequestDto> validator,
@@ -291,9 +324,10 @@ app.MapPost("/api/deposits", async (
     if (result.Status == "Conflict") return Results.Conflict(result);
 
     return Results.BadRequest(result);
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .RequireRateLimiting("transaction-limit");
 
-// 8. Execute secure cash withdrawal
+// 8. Execute secure cash withdrawal (Rate-limited)
 app.MapPost("/api/withdrawals", async (
     WithdrawalRequestDto dto,
     IValidator<WithdrawalRequestDto> validator,
@@ -319,7 +353,8 @@ app.MapPost("/api/withdrawals", async (
     if (result.Status == "Conflict") return Results.Conflict(result);
 
     return Results.BadRequest(result);
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .RequireRateLimiting("transaction-limit");
 
 app.Run();
 

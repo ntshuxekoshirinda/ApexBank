@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ApexBank.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1f0d16864690b728ab62562ca4a4ce85b9d2f6b0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+345dd9006d81e2d2a2ea736d8fe0cbd20282cd81")]
 [assembly: System.Reflection.AssemblyProductAttribute("ApexBank.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ApexBank.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
